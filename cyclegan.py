@@ -289,17 +289,17 @@ for epoch in range(epoch, opt.n_epochs):
     if not os.path.exists(opt.result_save_dir):
         os.makedirs(opt.result_save_dir)
     if epoch == 0:
-        fake_high = fake_high.view(opt.batch_size, 1, 256,256)
-        fake_low = fake_low.view(opt.batch_size, 1, 256,256)
-        real_high = high.view(opt.batch_size, 1, 256,256)
-        real_low = low.view(opt.batch_size, 1, 256,256)
+        fake_high = fake_high.view(opt.batch_size, 1, opt.img_size,opt.img_size)
+        fake_low = fake_low.view(opt.batch_size, 1, opt.img_size,opt.img_size)
+        real_high = high.view(opt.batch_size, 1, opt.img_size,opt.img_size)
+        real_low = low.view(opt.batch_size, 1, opt.img_size,opt.img_size)
         save_image(fake_high, "./fake_high.png", nrow=4)
         save_image(fake_low, "./fake_low.png", nrow=4)
         save_image(real_high, "./real_high.png", nrow=4)
         save_image(real_low, "./real_low.png", nrow=4)
     if (epoch+1) % 5 == 0:
-        fake_high = fake_high.view(opt.batch_size, 1, 256,256)
-        fake_low = fake_low.view(opt.batch_size, 1, 256,256)
+        fake_high = fake_high.view(opt.batch_size, 1, opt.img_size,opt.img_size)
+        fake_low = fake_low.view(opt.batch_size, 1, opt.img_size,opt.img_size)
         save_image(fake_high, os.path.join(opt.result_save_dir, f"{epoch}_high.png"), nrow=4)
         save_image(fake_low, os.path.join(opt.result_save_dir, f"{epoch}_low.png"), nrow=4)
     t = time()-start_time
@@ -354,13 +354,13 @@ for epoch in range(epoch, opt.n_epochs):
             accuracy = psnr(high, fake_high)  
             if best_accuracy < accuracy:
                 best_accuracy = accuracy
-                fake_high = fake_high.view(opt.batch_size, 1, 256,256)
-                high = high.view(opt.batch_size, 1, 256,256)
+                fake_high = fake_high.view(opt.batch_size, 1, opt.img_size,opt.img_size)
+                high = high.view(opt.batch_size, 1, opt.img_size,opt.img_size)
                 save_image(high, "./best_high.png", nrow=4)
                 save_image(fake_high, "./best_fake_high", nrow=4)
     if (epoch+1) % 5 == 0:
-        fake_high = fake_high.view(opt.batch_size, 1, 256,256)
-        high = high.view(opt.batch_size, 1, 256,256)
+        fake_high = fake_high.view(opt.batch_size, 1, opt.img_size,opt.img_size)
+        high = high.view(opt.batch_size, 1, opt.img_size,opt.img_size)
         save_image(high, os.path.join(opt.test_save_dir, f"{epoch}_high.png"), nrow=4)
         save_image(fake_high, os.path.join(opt.test_save_dir, f"{epoch}_fake_high.png"), nrow=4)
     time = time() - start_time
