@@ -35,6 +35,7 @@ opt.lr = 0.0002
 opt.epoch = 200
 opt.batch_size = 16
 opt.img_size = 128
+# img_size 128 -> 6 res_blocks in U-net
 opt.loss_lambda = 10
 
 # data load & preprocess
@@ -264,7 +265,7 @@ for epoch in range(epoch, opt.n_epochs):
 
         # train discriminator_low
         dis_low_optimizer.zero_grad()
-        fake_low_output = D_low(fake_high.detach())
+        fake_low_output = D_low(fake_low.detach())
         low_fake_loss = criterion_gan(fake_low_output, zeros)
 
         real_low_output = D_low(low)
@@ -275,7 +276,7 @@ for epoch in range(epoch, opt.n_epochs):
         dis_low_optimizer.step()
         # train discriminator_high
         dis_high_optimizer.zero_grad()
-        fake_high_output = D_high(fake_low.detach())
+        fake_high_output = D_high(fake_high.detach())
         high_fake_loss = criterion_gan(fake_high_output, zeros)
 
         real_high_output = D_high(high)
@@ -365,7 +366,7 @@ for epoch in range(epoch, opt.n_epochs):
         save_image(fake_high, os.path.join(opt.test_save_dir, f"{epoch}_fake_high.png"), nrow=4)
     time = time() - start_time
     print(f'Test : Epoch {epoch}/{opt.n_epochs} || discriminator low loss={loss_D_low:.4f} || discriminator high loss={loss_D_high:.4f} || generator loss={loss_G:.4f} || accuracy = {accuracy:.3f} || time {t:.3f}')        
-    torch.save(dict(epoch = epoch, G_low_high = G_low_high.state_dict(), G_high_low = G_high_low.state_dict(), D_low = D_low.state_dict(), D_low = D_low.state_dict(), D_high = D_high.state_dict(), 
+    torch.save(dict(epoch = epoch, G_low_high = G_low_high.state_dict(), G_high_low = G_high_low.state_dict(), D_low = D_low.state_dict(), D_high = D_high.state_dict(), 
                 gen_optimizer = gen_optimizer.state_dict(), dis_low_optimizer = dis_low_optimizer.state_dict(), dis_high_optimizer = dis_high_optimizer.state_dict()), str(opt.ckpt_dir)+'/'+str(epoch)+'.pt')
 summary.close()
 
