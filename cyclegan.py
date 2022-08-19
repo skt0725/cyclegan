@@ -1,7 +1,8 @@
 import glob
 import os
+from pickletools import int4
 from sys import path_hooks
-from time import time
+import time
 
 import matplotlib.pyplot as plt
 import torch
@@ -26,16 +27,17 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 opt = edict()
 opt.resume = False
 opt.ckpt_dir = "./checkpoint"
-opt.ckpt_reload = 0
+opt.ckpt_reload = '0'
 opt.train_dir = "./data/Low_High_CT_mat_slice"
 opt.test_dir = "./data/test"
 opt.result_save_dir = "./result"
 opt.test_save_dir = "./test"
+opt.best_save_dir = "./best"
 opt.lr = 0.0002
 opt.epoch = 200
-opt.batch_size = 16
-opt.img_size = 128
-# img_size 128 -> 6 res_blocks in U-net
+opt.batch_size = 4
+opt.img_size = 256
+# img_size 256 -> 9 res_blocks in U-net
 opt.loss_lambda = 10
 
 # data load & preprocess
@@ -58,17 +60,20 @@ for path in test_path:
 
 class AAPM(Dataset):
     def __init__(self, train, transform = None):
-        self.len = len(low)
+        self.train_len = len(low)
         self.low = low
         self.high = high
+        self.test_len = len(test_low)
         self.test_low = test_low
         self.test_high = test_high
         self.transform = transform
         self.train = train
 
     def __len__(self):
-        return self.len
-    
+        if self.train:
+            return self.train_len
+        else:
+            return self.test_len
     def __getitem__(self, idx):
         if self.transform is not None:
             if self.train:
@@ -94,7 +99,7 @@ class AAPM(Dataset):
 
 transform = transforms.Compose([
     transforms.ToPILImage(),
-    transforms.Resize(opt.img_size),
+    transforms.RandomCrop(opt.img_size),
     transforms.ToTensor(),
 ])
 
@@ -111,7 +116,7 @@ test_data = DataLoader(dataset=test_dataset, batch_size = opt.batch_size, drop_l
 # ax[1].set_title('high_dose')
 # plt.show()
 
-# 128*128 so 6 residual blocks 
+# 256*256 so 9 residual blocks 
 class ResidualBlock(nn.Module):
     def __init__(self):
         super().__init__()
@@ -126,12 +131,12 @@ class ResidualBlock(nn.Module):
         self.res_block = nn.Sequential(*res_block)
 
     def forward(self, x):
-        return x + self.resblock(x)
+        return x + self.res_block(x)
 
 class Generator(nn.Module):
     def __init__(self):
         super().__init__()
-        # architecture : c7s1-64,d128,d256,R256,R256,R256,
+        # architecture : c7s1-64,d128,d256,R256,R256,R256,R256,R256,R256,
         # R256,R256,R256,u128, u64,c7s1-3
         model = [nn.ReflectionPad2d(3),
                 nn.Conv2d(1, 64, 7),
@@ -143,7 +148,7 @@ class Generator(nn.Module):
         model += [nn.Conv2d(128, 256, 3, 2, 1),
             nn.InstanceNorm2d(256),
             nn.ReLU(inplace=True)]
-        for _ in range(6):
+        for _ in range(9):
             model += [ResidualBlock()]
         model += [nn.ConvTranspose2d(256, 128, 3, stride=2, padding=1, output_padding=1),
                 nn.InstanceNorm2d(128),
@@ -160,9 +165,9 @@ class Generator(nn.Module):
         return self.model(z)
     def init_params(self, m):
         if type(m) == nn.Conv2d:
-            nn.init.normal(m.weight.data, 0, 0.02)
+            nn.init.normal_(m.weight.data, 0, 0.02)
         elif type(m) == nn.BatchNorm2d:
-            nn.init.normal(m.weight.data, 1, 0.02)
+            nn.init.normal_(m.weight.data, 1, 0.02)
             nn.init.constant(m.bias.data, 0)
 
 class Discriminator(nn.Module):
@@ -186,7 +191,7 @@ class Discriminator(nn.Module):
                 nn.LeakyReLU(0.2, True)]
                 # Receptive field : 7
         model += [nn.Conv2d(512, 1, 4, padding=1),
-                nn.AvgPool2d(14)]
+                nn.AvgPool2d(30)]
                 # Receptive field : 4
         self.model = nn.Sequential(*model)
         self.apply(self.init_params)
@@ -195,14 +200,25 @@ class Discriminator(nn.Module):
         return output.view(output.size()[0], 1)
     def init_params(self, m):
         if type(m) == nn.Conv2d:
-            nn.init.normal(m.weight.data, 0, 0.02)
+            nn.init.normal_(m.weight.data, 0, 0.02)
         elif type(m) == nn.BatchNorm2d:
-            nn.init.normal(m.weight.data, 1, 0.02)
+            nn.init.normal_(m.weight.data, 1, 0.02)
             nn.init.constant(m.bias.data, 0)
 
 def lr_decay(epoch):
     lr = 1 - max(0, epoch - 100)/200
     return lr
+def psnr_accuracy(x, y):
+    batch_size = x.shape[0]
+    accuracy = 0
+    index = 0
+    for i in range(batch_size):
+        temp_accuracy = psnr(x[i], y[i], data_range=1)
+        if accuracy < temp_accuracy:
+            accuracy = temp_accuracy
+            index = i
+    return accuracy, index
+
 
 G_low_high = Generator().to(device)
 G_high_low = Generator().to(device)
@@ -212,10 +228,10 @@ gen_optimizer = torch.optim.Adam(itertools.chain(G_low_high.parameters(),G_high_
 dis_low_optimizer = torch.optim.Adam(D_low.parameters(), lr=opt.lr)
 dis_high_optimizer = torch.optim.Adam(D_high.parameters(), lr=opt.lr)
 lr_scheduler_G = torch.optim.lr_scheduler.LambdaLR(gen_optimizer, lr_lambda=lr_decay)
-lr_scheduler_D_low = torch.optim.lr_scheduler(dis_low_optimizer, lr_lambda=lr_decay)
-lr_scheduler_D_high = torch.optim.lr_scheduler(dis_high_optimizer, lr_lambda=lr_decay)
+lr_scheduler_D_low = torch.optim.lr_scheduler.LambdaLR(dis_low_optimizer, lr_lambda=lr_decay)
+lr_scheduler_D_high = torch.optim.lr_scheduler.LambdaLR(dis_high_optimizer, lr_lambda=lr_decay)
 summary = SummaryWriter('logs/')
-epoch = 0
+
 
 if opt.resume:
     ckpt = opt.ckpt / ('%s.pt' % opt.ckpt_reload)
@@ -231,14 +247,25 @@ if opt.resume:
         epoch = checkpoint['epoch'] + 1
     except Exception as e:
         print(e)
+if not os.path.exists(opt.result_save_dir):
+    os.makedirs(opt.result_save_dir)
+if not os.path.exists(opt.ckpt_dir):
+    os.makedirs(opt.ckpt_dir)
+if not os.path.exists(opt.test_save_dir):
+    os.makedirs(opt.test_save_dir)
+if not os.path.exists(opt.best_save_dir):
+    os.makedirs(opt.best_save_dir)
+
 ones = torch.ones((opt.batch_size, 1)).to(device)
 zeros = torch.zeros((opt.batch_size, 1)).to(device)
 best_accuracy = 0
 criterion_identity = nn.L1Loss()
 criterion_gan = nn.MSELoss()
 criterion_cycle = nn.L1Loss()
-for epoch in range(epoch, opt.n_epochs):
-    start_time = time()
+epoch = 0
+best_epoch = 0
+for epoch in range(epoch, opt.epoch):
+    start_time = time.time()
     G_low_high.train()
     G_high_low.train()
     D_low.train()
@@ -249,16 +276,16 @@ for epoch in range(epoch, opt.n_epochs):
         # train generator
         gen_optimizer.zero_grad()
         # identity loss : G_low_high(high), high (L1)
-        loss_identity_low = criterion_identity(G_high_low(low),low)
-        loss_identity_high = criterion_identity(G_low_high(high), high)
+        loss_identity_low = criterion_identity(G_high_low(low),low)*5
+        loss_identity_high = criterion_identity(G_low_high(high), high)*5
         # GAN loss : D_high(G_low_high(low)), 1 (MSE)
         fake_high = G_low_high(low)
         fake_low = G_high_low(high)
         loss_gan_low = criterion_gan(D_high(fake_high), ones)
         loss_gan_high = criterion_gan(D_low(fake_low), ones)
         # cycle loss : G_low_high(low), low (L1)
-        loss_cycle_low = criterion_cycle(G_high_low(fake_high), low)
-        loss_cycle_high = criterion_cycle(G_low_high(fake_low), high)
+        loss_cycle_low = criterion_cycle(G_high_low(fake_high), low)*10
+        loss_cycle_high = criterion_cycle(G_low_high(fake_low), high)*10
         loss_G = loss_identity_high + loss_identity_low + loss_gan_high + loss_gan_low + loss_cycle_high + loss_cycle_low
         loss_G.backward()
         gen_optimizer.step()
@@ -285,10 +312,8 @@ for epoch in range(epoch, opt.n_epochs):
         loss_D_high = (high_fake_loss + high_real_loss)/2
         loss_D_high.backward()
         dis_high_optimizer.step()
-        accuracy = psnr(high, fake_high)
-
-    if not os.path.exists(opt.result_save_dir):
-        os.makedirs(opt.result_save_dir)
+        accuracy, _ = psnr_accuracy(high.cpu().detach().numpy(), fake_high.cpu().detach().numpy())
+        
     if epoch == 0:
         fake_high = fake_high.view(opt.batch_size, 1, opt.img_size,opt.img_size)
         fake_low = fake_low.view(opt.batch_size, 1, opt.img_size,opt.img_size)
@@ -298,16 +323,16 @@ for epoch in range(epoch, opt.n_epochs):
         save_image(fake_low, "./fake_low.png", nrow=4)
         save_image(real_high, "./real_high.png", nrow=4)
         save_image(real_low, "./real_low.png", nrow=4)
-    if (epoch+1) % 5 == 0:
+    if (epoch+1) % 10 == 0:
         fake_high = fake_high.view(opt.batch_size, 1, opt.img_size,opt.img_size)
         fake_low = fake_low.view(opt.batch_size, 1, opt.img_size,opt.img_size)
         save_image(fake_high, os.path.join(opt.result_save_dir, f"{epoch}_high.png"), nrow=4)
         save_image(fake_low, os.path.join(opt.result_save_dir, f"{epoch}_low.png"), nrow=4)
-    t = time()-start_time
+    t = time.time()-start_time
     lr_scheduler_G.step()
     lr_scheduler_D_low.step()
     lr_scheduler_D_high.step()
-    print(f'Train: Epoch {epoch}/{opt.n_epochs} || discriminator low loss={loss_D_low:.4f} || discriminator high loss={loss_D_high:.4f} || generator loss={loss_G:.4f} || accuracy = {accuracy:.3f} || time {t:.3f}')
+    print(f'Train: Epoch {epoch} || discriminator low loss={loss_D_low:.4f} || discriminator high loss={loss_D_high:.4f} || generator loss={loss_G:.4f} || accuracy = {accuracy:.3f} || time {t:.3f}')
     summary.add_scalar("dis_low", loss_D_low, epoch)
     summary.add_scalar("dis_high", loss_D_high, epoch)
     summary.add_scalar("gen", loss_G, epoch)
@@ -316,24 +341,22 @@ for epoch in range(epoch, opt.n_epochs):
     G_high_low.eval()
     D_low.eval()
     D_high.eval()
-    start_time = time()
+    start_time = time.time()
     with torch.no_grad():
         for i, (test_low, test_high) in enumerate(test_data):
             low = test_low.to(device)
             high = test_high.to(device)
-            fake_low = G_high_low(high)
-            fake_high = G_low_high(low)
             # identity loss
-            loss_identity_low = criterion_identity(G_high_low(low),low)
-            loss_identity_high = criterion_identity(G_low_high(high), high)
+            loss_identity_low = criterion_identity(G_high_low(low),low)*5
+            loss_identity_high = criterion_identity(G_low_high(high), high)*5
             # GAN loss 
             fake_high = G_low_high(low)
             fake_low = G_high_low(high)
             loss_gan_low = criterion_gan(D_high(fake_high), ones)
             loss_gan_high = criterion_gan(D_low(fake_low), ones)
             # cycle loss
-            loss_cycle_low = criterion_cycle(G_high_low(fake_high), low)
-            loss_cycle_high = criterion_cycle(G_low_high(fake_low), high)
+            loss_cycle_low = criterion_cycle(G_high_low(fake_high), low)*10
+            loss_cycle_high = criterion_cycle(G_low_high(fake_low), high)*10
             loss_G = loss_identity_high + loss_identity_low + loss_gan_high + loss_gan_low + loss_cycle_high + loss_cycle_low
             # discriminator_low
             fake_low_output = D_low(fake_high)
@@ -344,7 +367,6 @@ for epoch in range(epoch, opt.n_epochs):
 
             loss_D_low = (low_fake_loss + low_real_loss)/2
             # discriminator_high
-            dis_high_optimizer.zero_grad()
             fake_high_output = D_high(fake_low)
             high_fake_loss = criterion_gan(fake_high_output, zeros)
 
@@ -352,25 +374,35 @@ for epoch in range(epoch, opt.n_epochs):
             high_real_loss = criterion_gan(real_high_output, ones)
 
             loss_D_high = (high_fake_loss + high_real_loss)/2  
-            accuracy = psnr(high, fake_high)  
+            accuracy, index = psnr_accuracy(low.cpu().detach().numpy(), fake_high.cpu().detach().numpy())  
             if best_accuracy < accuracy:
                 best_accuracy = accuracy
-                fake_high = fake_high.view(opt.batch_size, 1, opt.img_size,opt.img_size)
-                high = high.view(opt.batch_size, 1, opt.img_size,opt.img_size)
-                save_image(high, "./best_high.png", nrow=4)
-                save_image(fake_high, "./best_fake_high", nrow=4)
-    if (epoch+1) % 5 == 0:
-        fake_high = fake_high.view(opt.batch_size, 1, opt.img_size,opt.img_size)
-        high = high.view(opt.batch_size, 1, opt.img_size,opt.img_size)
-        save_image(high, os.path.join(opt.test_save_dir, f"{epoch}_high.png"), nrow=4)
-        save_image(fake_high, os.path.join(opt.test_save_dir, f"{epoch}_fake_high.png"), nrow=4)
-    time = time() - start_time
-    print(f'Test : Epoch {epoch}/{opt.n_epochs} || discriminator low loss={loss_D_low:.4f} || discriminator high loss={loss_D_high:.4f} || generator loss={loss_G:.4f} || accuracy = {accuracy:.3f} || time {t:.3f}')        
+                best_epoch = epoch
+                fake_high = fake_high[index].view(1, opt.img_size,opt.img_size)
+                low = low[index].view(1, opt.img_size,opt.img_size)
+                psnr_residual = psnr(low.cpu().detach().numpy(), fake_high.cpu().detach().numpy(), data_range=1)
+                residual = (low - fake_high).view(1, opt.img_size, opt.img_size)
+                save_image(low, os.path.join(opt.best_save_dir, "best_low.png"), nrow=4)
+                save_image(fake_low, os.path.join(opt.best_save_dir, "best_fake_low.png"), nrow=4)
+                save_image(residual, os.path.join(opt.best_save_dir, "residual.png"), nrow = 4)
+    # if (epoch+1) % 10 == 0:
+    #     fake_high = fake_high.view(opt.batch_size, 1, opt.img_size,opt.img_size)
+    #     high = high.view(opt.batch_size, 1, opt.img_size,opt.img_size)
+    #     save_image(high, os.path.join(opt.test_save_dir, f"{epoch}_high.png"), nrow=4)
+    #     save_image(fake_high, os.path.join(opt.test_save_dir, f"{epoch}_fake_high.png"), nrow=4)
+    t = time.time() - start_time
+    print(f'Test : Epoch {epoch} || discriminator low loss={loss_D_low:.4f} || discriminator high loss={loss_D_high:.4f} || generator loss={loss_G:.4f} || accuracy = {accuracy:.3f} || best_accuracy = {best_accuracy:.3f} || best_residual = {psnr_residual:.3f} || time {t:.3f}')        
     torch.save(dict(epoch = epoch, G_low_high = G_low_high.state_dict(), G_high_low = G_high_low.state_dict(), D_low = D_low.state_dict(), D_high = D_high.state_dict(), 
                 gen_optimizer = gen_optimizer.state_dict(), dis_low_optimizer = dis_low_optimizer.state_dict(), dis_high_optimizer = dis_high_optimizer.state_dict()), str(opt.ckpt_dir)+'/'+str(epoch)+'.pt')
 summary.close()
 
+# evaluation metric
+# see whether low - G_low_high(low) result in noise
+# see whether psnr(low, G_low_high(low)) ~= 4dB
 
+# question
+# how to get fully denoised image with cropped generator?
+# how to average psnr of cropped image while parameter is updated every epoch?
 
 
         
