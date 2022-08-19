@@ -211,13 +211,9 @@ def lr_decay(epoch):
 def psnr_accuracy(x, y):
     batch_size = x.shape[0]
     accuracy = 0
-    index = 0
     for i in range(batch_size):
-        temp_accuracy = psnr(x[i], y[i], data_range=1)
-        if accuracy < temp_accuracy:
-            accuracy = temp_accuracy
-            index = i
-    return accuracy, index
+        accuracy += psnr(x[i], y[i], data_range=1)
+    return accuracy/batch_size
 
 
 G_low_high = Generator().to(device)
@@ -312,7 +308,7 @@ for epoch in range(epoch, opt.epoch):
         loss_D_high = (high_fake_loss + high_real_loss)/2
         loss_D_high.backward()
         dis_high_optimizer.step()
-        accuracy, _ = psnr_accuracy(high.cpu().detach().numpy(), fake_high.cpu().detach().numpy())
+        accuracy = psnr_accuracy(high.cpu().detach().numpy(), fake_high.cpu().detach().numpy())
         
     if epoch == 0:
         fake_high = fake_high.view(opt.batch_size, 1, opt.img_size,opt.img_size)
@@ -343,6 +339,8 @@ for epoch in range(epoch, opt.epoch):
     D_high.eval()
     start_time = time.time()
     with torch.no_grad():
+        test_accuracy = 0
+        test_num = 0
         for i, (test_low, test_high) in enumerate(test_data):
             low = test_low.to(device)
             high = test_high.to(device)
@@ -374,17 +372,20 @@ for epoch in range(epoch, opt.epoch):
             high_real_loss = criterion_gan(real_high_output, ones)
 
             loss_D_high = (high_fake_loss + high_real_loss)/2  
-            accuracy, index = psnr_accuracy(low.cpu().detach().numpy(), fake_high.cpu().detach().numpy())  
-            if best_accuracy < accuracy:
-                best_accuracy = accuracy
-                best_epoch = epoch
-                fake_high = fake_high[index].view(1, opt.img_size,opt.img_size)
-                low = low[index].view(1, opt.img_size,opt.img_size)
-                psnr_residual = psnr(low.cpu().detach().numpy(), fake_high.cpu().detach().numpy(), data_range=1)
-                residual = (low - fake_high).view(1, opt.img_size, opt.img_size)
-                save_image(low, os.path.join(opt.best_save_dir, "best_low.png"), nrow=4)
-                save_image(fake_low, os.path.join(opt.best_save_dir, "best_fake_low.png"), nrow=4)
-                save_image(residual, os.path.join(opt.best_save_dir, "residual.png"), nrow = 4)
+            test_accuracy += psnr_accuracy(low.cpu().detach().numpy(), fake_high.cpu().detach().numpy())  
+            test_num += low.shape[0]
+        
+        test_accuracy /= test_num
+        if best_accuracy < test_accuracy:
+            best_accuracy = test_accuracy
+            best_epoch = epoch
+            fake_high = fake_high.view(opt.batch_size, 1, opt.img_size,opt.img_size)
+            low = low.view(opt.batch_size, 1, opt.img_size,opt.img_size)
+            psnr_residual = psnr(low.cpu().detach().numpy(), fake_high.cpu().detach().numpy(), data_range=1)
+            residual = (low - fake_high).view(opt.batch_size, 1, opt.img_size, opt.img_size)
+            save_image(low, os.path.join(opt.best_save_dir, "best_low.png"), nrow=4)
+            save_image(fake_low, os.path.join(opt.best_save_dir, "best_fake_low.png"), nrow=4)
+            save_image(residual, os.path.join(opt.best_save_dir, "residual.png"), nrow = 4)
     # if (epoch+1) % 10 == 0:
     #     fake_high = fake_high.view(opt.batch_size, 1, opt.img_size,opt.img_size)
     #     high = high.view(opt.batch_size, 1, opt.img_size,opt.img_size)
