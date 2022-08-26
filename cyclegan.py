@@ -40,6 +40,11 @@ opt.img_size = 256
 # img_size 256 -> 9 res_blocks in U-net
 opt.loss_lambda = 10
 epoch = 0
+
+
+
+
+
 # data load & preprocess
 train_path = glob.glob(os.path.join(opt.train_dir, '**/*.mat'), recursive=True)
 test_path = glob.glob(os.path.join(opt.test_dir, '**/*.mat'), recursive=True)
@@ -111,7 +116,7 @@ train_data = DataLoader(dataset=train_dataset, batch_size = opt.batch_size, shuf
 test_dataset = AAPM(train = False, transform = transform)
 test_data = DataLoader(dataset=test_dataset, batch_size = opt.batch_size, drop_last = True, shuffle = True, num_workers = 1)
 vis_dataset = AAPM(train = False, transform = vis_transform)
-vis_dataset = DataLoader(dataset=vis_dataset, batch_size = opt.batch_size, drop_last = True, shuffle=True, num_workers = 1)
+vis_data = DataLoader(dataset=vis_dataset, batch_size = opt.batch_size, drop_last = True, shuffle=True, num_workers = 1)
 # low, high = next(iter(train_data))
 # print(low.shape)
 # fig, ax = plt.subplots(1, 2)
@@ -399,7 +404,7 @@ for epoch in range(epoch, opt.epoch):
                 gen_optimizer = gen_optimizer.state_dict(), dis_low_optimizer = dis_low_optimizer.state_dict(), dis_high_optimizer = dis_high_optimizer.state_dict()), str(opt.ckpt_dir)+'/'+str(epoch)+'.pt')
 
 with torch.no_grad():
-    low, high = vis_dataset[0]
+    low, high = vis_data[0]
     low = low.to(device)
     fake_low_1 = best_G(low[:256, :256])
     fake_low_2 = best_G(low[:256, 256:])
