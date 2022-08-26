@@ -25,9 +25,9 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # hyperparameters
 opt = edict()
-opt.resume = False
+opt.resume = True
 opt.ckpt_dir = "./checkpoint"
-opt.ckpt_reload = '0'
+opt.ckpt_reload = '4'
 opt.train_dir = "./data/Low_High_CT_mat_slice"
 opt.test_dir = "./data/test"
 opt.result_save_dir = "./result"
@@ -39,7 +39,7 @@ opt.batch_size = 4
 opt.img_size = 256
 # img_size 256 -> 9 res_blocks in U-net
 opt.loss_lambda = 10
-
+epoch = 0
 # data load & preprocess
 train_path = glob.glob(os.path.join(opt.train_dir, '**/*.mat'), recursive=True)
 test_path = glob.glob(os.path.join(opt.test_dir, '**/*.mat'), recursive=True)
@@ -102,11 +102,16 @@ transform = transforms.Compose([
     transforms.RandomCrop(opt.img_size),
     transforms.ToTensor(),
 ])
-
+vis_transform = transforms.Compose([
+    transforms.ToPILImage(),
+    transforms.ToTensor()
+])
 train_dataset = AAPM(train = True, transform = transform)
 train_data = DataLoader(dataset=train_dataset, batch_size = opt.batch_size, shuffle=True, num_workers = 1, drop_last = True)
 test_dataset = AAPM(train = False, transform = transform)
 test_data = DataLoader(dataset=test_dataset, batch_size = opt.batch_size, drop_last = True, shuffle = True, num_workers = 1)
+vis_dataset = AAPM(train = False, transform = vis_transform)
+vis_dataset = DataLoader(dataset=vis_dataset, batch_size = opt.batch_size, drop_last = True, shuffle=True, num_workers = 1)
 # low, high = next(iter(train_data))
 # print(low.shape)
 # fig, ax = plt.subplots(1, 2)
@@ -230,7 +235,7 @@ summary = SummaryWriter('logs/')
 
 
 if opt.resume:
-    ckpt = opt.ckpt / ('%s.pt' % opt.ckpt_reload)
+    ckpt = os.path.join(opt.ckpt_dir, ('%s.pt' % opt.ckpt_reload))
     try:
         checkpoint = torch.load(ckpt)
         G_low_high.load_state_dict(checkpoint['G_low_high'])
@@ -258,7 +263,7 @@ best_accuracy = 0
 criterion_identity = nn.L1Loss()
 criterion_gan = nn.MSELoss()
 criterion_cycle = nn.L1Loss()
-epoch = 0
+
 best_epoch = 0
 for epoch in range(epoch, opt.epoch):
     start_time = time.time()
@@ -266,6 +271,8 @@ for epoch in range(epoch, opt.epoch):
     G_high_low.train()
     D_low.train()
     D_high.train()
+    train_num = 0
+    accuracy = 0
     for i, (low, high) in enumerate(train_data):
         low = low.to(device)
         high = high.to(device)
@@ -308,8 +315,9 @@ for epoch in range(epoch, opt.epoch):
         loss_D_high = (high_fake_loss + high_real_loss)/2
         loss_D_high.backward()
         dis_high_optimizer.step()
-        accuracy = psnr_accuracy(high.cpu().detach().numpy(), fake_high.cpu().detach().numpy())
-        
+        accuracy += psnr_accuracy(low.cpu().detach().numpy(), fake_high.cpu().detach().numpy())
+        train_num += 1
+    accuracy /= train_num
     if epoch == 0:
         fake_high = fake_high.view(opt.batch_size, 1, opt.img_size,opt.img_size)
         fake_low = fake_low.view(opt.batch_size, 1, opt.img_size,opt.img_size)
@@ -373,28 +381,38 @@ for epoch in range(epoch, opt.epoch):
 
             loss_D_high = (high_fake_loss + high_real_loss)/2  
             test_accuracy += psnr_accuracy(low.cpu().detach().numpy(), fake_high.cpu().detach().numpy())  
-            test_num += low.shape[0]
-        
+            test_num += 1
         test_accuracy /= test_num
         if best_accuracy < test_accuracy:
             best_accuracy = test_accuracy
             best_epoch = epoch
-            fake_high = fake_high.view(opt.batch_size, 1, opt.img_size,opt.img_size)
-            low = low.view(opt.batch_size, 1, opt.img_size,opt.img_size)
-            psnr_residual = psnr(low.cpu().detach().numpy(), fake_high.cpu().detach().numpy(), data_range=1)
-            residual = (low - fake_high).view(opt.batch_size, 1, opt.img_size, opt.img_size)
-            save_image(low, os.path.join(opt.best_save_dir, "best_low.png"), nrow=4)
-            save_image(fake_low, os.path.join(opt.best_save_dir, "best_fake_low.png"), nrow=4)
-            save_image(residual, os.path.join(opt.best_save_dir, "residual.png"), nrow = 4)
+            best_G = G_low_high
+            
     # if (epoch+1) % 10 == 0:
     #     fake_high = fake_high.view(opt.batch_size, 1, opt.img_size,opt.img_size)
     #     high = high.view(opt.batch_size, 1, opt.img_size,opt.img_size)
     #     save_image(high, os.path.join(opt.test_save_dir, f"{epoch}_high.png"), nrow=4)
     #     save_image(fake_high, os.path.join(opt.test_save_dir, f"{epoch}_fake_high.png"), nrow=4)
     t = time.time() - start_time
-    print(f'Test : Epoch {epoch} || discriminator low loss={loss_D_low:.4f} || discriminator high loss={loss_D_high:.4f} || generator loss={loss_G:.4f} || accuracy = {accuracy:.3f} || best_accuracy = {best_accuracy:.3f} || best_residual = {psnr_residual:.3f} || time {t:.3f}')        
+    print(f'Test : Epoch {epoch} || discriminator low loss={loss_D_low:.4f} || discriminator high loss={loss_D_high:.4f} || generator loss={loss_G:.4f} || accuracy = {test_accuracy:.3f} || best_accuracy = {best_accuracy:.3f} || time {t:.3f}')        
     torch.save(dict(epoch = epoch, G_low_high = G_low_high.state_dict(), G_high_low = G_high_low.state_dict(), D_low = D_low.state_dict(), D_high = D_high.state_dict(), 
                 gen_optimizer = gen_optimizer.state_dict(), dis_low_optimizer = dis_low_optimizer.state_dict(), dis_high_optimizer = dis_high_optimizer.state_dict()), str(opt.ckpt_dir)+'/'+str(epoch)+'.pt')
+
+with torch.no_grad():
+    low, high = vis_dataset[0]
+    low = low.to(device)
+    fake_low_1 = best_G(low[:256, :256])
+    fake_low_2 = best_G(low[:256, 256:])
+    fake_low_3 = best_G(low[256:, :256])
+    fake_low_4 = best_G(low[256:, 256:])
+    vis1 = torch.cat((fake_low_1, fake_low_3))
+    vis2 = torch.cat((fake_low_2, fake_low_4))
+    vis = torch.cat((vis1, vis2), axis = 1)
+    res = low - vis
+    print(psnr(low, vis))
+    save_image(vis, "./vis.png")
+    save_image(low, "./low.png")
+    save_image(res, "./residual.png")
 summary.close()
 
 # evaluation metric
